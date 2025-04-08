@@ -1,0 +1,642 @@
+PureFlow Admin Dashboard - Database Connection & Security Documentation
+1. Connecting to the Existing PostgreSQL Database
+Database Connection Configuration
+// admin-dashboard/server/db.ts
+import { drizzle } from 'drizzle-orm/pg-pool';
+import { Pool } from 'pg';
+import * as schema from '@shared/schema';
+// Use the same environment variable as the customer app
+export const pool = new Pool({ 
+  connectionString: process.env.DATABASE_URL,
+  // Optional: Admin-specific pool configuration
+  max: 10, // Maximum number of clients
+  idleTimeoutMillis: 30000
+});
+export const db = drizzle(pool, { schema });
+// For monitoring/logging purposes
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle database client', err);
+  process.exit(-1);
+});
+Environment Setup
+The admin application should use the same DATABASE_URL environment variable but with proper security measures:
+
+# .env.example for admin dashboard
+# Database Configuration (same database as customer app)
+DATABASE_URL=postgresql://username:password@host:port/database
+# Admin-specific JWT secret (different from customer app)
+ADMIN_JWT_SECRET=your-very-strong-secret-here
+# Session configuration
+SESSION_SECRET=another-strong-secret-for-admin-sessions
+SESSION_EXPIRY=3600000 # 1 hour in milliseconds
+2. Creating Admin-Specific Database Queries
+Schema Sharing
+Both applications should share the same schema definitions:
+
+// shared/schema.ts (already exists in customer app)
+// Add admin-specific types or extend as needed
+// Add admin users table
+export const adminUsers = pgTable("admin_users", {
+  id: serial("id").primaryKey(),
+  username: text("username").notNull().unique(),
+  password: text("password").notNull(),
+  email: text("email").notNull().unique(),
+  role: text("role").notNull().default("admin"), // admin, super_admin, support, technician
+  lastLogin: timestamp("last_login"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+// Add admin activity logs
+export const adminActivityLogs = pgTable("admin_activity_logs", {
+  id: serial("id").primaryKey(),
+  adminId: integer("admin_id").references(() => adminUsers.id),
+  action: text("action").notNull(),
+  entityType: text("entity_type").notNull(), // user, subscription, installation, etc.
+  entityId: integer("entity_id"),
+  details: jsonb("details"),
+  ipAddress: text("ip_address"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+// Add types
+export type AdminUser = typeof adminUsers.$inferSelect;
+export type InsertAdminUser = typeof adminUsers.$inferInsert;
+export type AdminActivityLog = typeof adminActivityLogs.$inferSelect;
+export type InsertAdminActivityLog = typeof adminActivityLogs.$inferInsert;
+Admin-Specific Queries
+// admin-dashboard/server/admin-repository.ts
+import { eq, and, desc, sql } from 'drizzle-orm';
+import { db } from './db';
+import { 
+  users, subscriptions, installations, supportTickets, 
+  adminUsers, adminActivityLogs
+} from '@shared/schema';
+export class AdminRepository {
+  // User management
+  async getAllUsers() {
+    return db.select().from(users).orderBy(desc(users.id));
+  }
+  
+  async getUserWithDetails(userId: number) {
+    // Get user with their subscription, installation, and tickets
+    const user = await db.select().from(users).where(eq(users.id, userId));
+    const subscription = await db.select().from(subscriptions).where(eq(subscriptions.userId, userId));
+    const installation = await db.select().from(installations).where(eq(installations.userId, userId));
+    const tickets = await db.select().from(supportTickets).where(eq(supportTickets.userId, userId));
+    
+    return { user: user[0], subscription: subscription[0], installation: installation[0], tickets };
+  }
+  
+  // Installation management
+  async getPendingInstallations() {
+    return db.select({
+      installation: installations,
+      user: {
+        username: users.username,
+        phone: users.phone,
+        address: users.address
+      }
+    })
+    .from(installations)
+    .innerJoin(users, eq(installations.userId, users.id))
+    .where(eq(installations.status, 'pending'))
+    .orderBy(installations.createdAt);
+  }
+  
+  async updateInstallationStatus(id: number, status: string, technicianNotes?: string) {
+    return db.update(installations)
+      .set({ 
+        status, 
+        technicianNotes,
+        updatedAt: new Date() 
+      })
+      .where(eq(installations.id, id))
+      .returning();
+  }
+  
+  // Support ticket management
+  async getOpenSupportTickets() {
+    return db.select({
+      ticket: supportTickets,
+      user: {
+        username: users.username,
+        phone: users.phone
+      }
+    })
+    .from(supportTickets)
+    .innerJoin(users, eq(supportTickets.userId, users.id))
+    .where(eq(supportTickets.status, 'open'))
+    .orderBy(supportTickets.createdAt);
+  }
+  
+  // Admin user management
+  async getAdminByUsername(username: string) {
+    const results = await db.select()
+      .from(adminUsers)
+      .where(eq(adminUsers.username, username));
+    return results[0];
+  }
+  
+  async createAdminUser(data: InsertAdminUser) {
+    const [admin] = await db.insert(adminUsers)
+      .values(data)
+      .returning();
+    return admin;
+  }
+  
+  // Activity logging
+  async logAdminActivity(data: InsertAdminActivityLog) {
+    return db.insert(adminActivityLogs)
+      .values(data)
+      .returning();
+  }
+  
+  // Dashboard statistics
+  async getDashboardStats() {
+    const userCount = await db.select({ count: sql<number>`count(*)` }).from(users);
+    const activeSubscriptions = await db.select({ count: sql<number>`count(*)` })
+      .from(subscriptions)
+      .where(eq(subscriptions.status, 'active'));
+    const pendingInstallations = await db.select({ count: sql<number>`count(*)` })
+      .from(installations)
+      .where(eq(installations.status, 'pending'));
+    const openTickets = await db.select({ count: sql<number>`count(*)` })
+      .from(supportTickets)
+      .where(eq(supportTickets.status, 'open'));
+      
+    return {
+      totalUsers: userCount[0].count,
+      activeSubscriptions: activeSubscriptions[0].count,
+      pendingInstallations: pendingInstallations[0].count,
+      openTickets: openTickets[0].count
+    };
+  }
+}
+export const adminRepository = new AdminRepository();
+3. API Endpoints for Admin Operations
+// admin-dashboard/server/routes.ts
+import { Express, Request, Response, NextFunction } from 'express';
+import { adminRepository } from './admin-repository';
+import { verifyAdminToken } from './auth';
+import { createServer } from 'http';
+import { z } from 'zod';
+// Middleware to require admin authentication
+const requireAdmin = (req: Request, res: Response, next: NextFunction) => {
+  if (!req.isAuthenticated || !req.isAuthenticated()) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+  next();
+};
+// Middleware to require super admin role
+const requireSuperAdmin = (req: Request, res: Response, next: NextFunction) => {
+  if (!req.user || req.user.role !== 'super_admin') {
+    return res.status(403).json({ message: 'Forbidden: Requires super admin privileges' });
+  }
+  next();
+};
+// Middleware to log admin activity
+const logAdminActivity = async (req: Request, res: Response, next: NextFunction) => {
+  const originalSend = res.send;
+  
+  res.send = function(body) {
+    const adminId = req.user?.id;
+    if (adminId && req.adminAction) {
+      adminRepository.logAdminActivity({
+        adminId,
+        action: req.adminAction,
+        entityType: req.entityType || 'unknown',
+        entityId: req.entityId,
+        details: req.actionDetails || {},
+        ipAddress: req.ip
+      });
+    }
+    return originalSend.call(this, body);
+  };
+  
+  next();
+};
+export function registerAdminRoutes(app: Express) {
+  // Apply global middleware for admin routes
+  app.use('/api/admin', requireAdmin);
+  app.use('/api/admin', logAdminActivity);
+  
+  // Dashboard statistics
+  app.get('/api/admin/dashboard', async (req, res) => {
+    try {
+      const stats = await adminRepository.getDashboardStats();
+      res.json(stats);
+    } catch (error) {
+      console.error('Error fetching dashboard stats:', error);
+      res.status(500).json({ message: 'Failed to fetch dashboard statistics' });
+    }
+  });
+  
+  // User management endpoints
+  app.get('/api/admin/users', async (req, res) => {
+    try {
+      const users = await adminRepository.getAllUsers();
+      res.json(users);
+    } catch (error) {
+      console.error('Error fetching users:', error);
+      res.status(500).json({ message: 'Failed to fetch users' });
+    }
+  });
+  
+  app.get('/api/admin/users/:id', async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      req.entityType = 'user';
+      req.entityId = userId;
+      req.adminAction = 'view_user_details';
+      
+      const userDetails = await adminRepository.getUserWithDetails(userId);
+      if (!userDetails.user) {
+        return res.status(404).json({ message: 'User not found' });
+      }
+      
+      res.json(userDetails);
+    } catch (error) {
+      console.error('Error fetching user details:', error);
+      res.status(500).json({ message: 'Failed to fetch user details' });
+    }
+  });
+  
+  // Installation management endpoints
+  app.get('/api/admin/installations/pending', async (req, res) => {
+    try {
+      const installations = await adminRepository.getPendingInstallations();
+      res.json(installations);
+    } catch (error) {
+      console.error('Error fetching pending installations:', error);
+      res.status(500).json({ message: 'Failed to fetch pending installations' });
+    }
+  });
+  
+  app.patch('/api/admin/installations/:id', async (req, res) => {
+    try {
+      const schema = z.object({
+        status: z.string(),
+        technicianNotes: z.string().optional()
+      });
+      
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: 'Invalid input', errors: parsed.error });
+      }
+      
+      const id = parseInt(req.params.id);
+      req.entityType = 'installation';
+      req.entityId = id;
+      req.adminAction = 'update_installation_status';
+      req.actionDetails = { newStatus: req.body.status };
+      
+      const updated = await adminRepository.updateInstallationStatus(
+        id, 
+        req.body.status, 
+        req.body.technicianNotes
+      );
+      
+      res.json(updated);
+    } catch (error) {
+      console.error('Error updating installation:', error);
+      res.status(500).json({ message: 'Failed to update installation' });
+    }
+  });
+  
+  // Support ticket management endpoints
+  app.get('/api/admin/tickets/open', async (req, res) => {
+    try {
+      const tickets = await adminRepository.getOpenSupportTickets();
+      res.json(tickets);
+    } catch (error) {
+      console.error('Error fetching open tickets:', error);
+      res.status(500).json({ message: 'Failed to fetch open tickets' });
+    }
+  });
+  
+  // Admin user management (super admin only)
+  app.post('/api/admin/admins', requireSuperAdmin, async (req, res) => {
+    try {
+      const schema = z.object({
+        username: z.string(),
+        email: z.string().email(),
+        password: z.string().min(8),
+        role: z.enum(['admin', 'super_admin', 'support', 'technician'])
+      });
+      
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: 'Invalid input', errors: parsed.error });
+      }
+      
+      req.entityType = 'admin_user';
+      req.adminAction = 'create_admin_user';
+      req.actionDetails = { role: req.body.role };
+      
+      // Hash password before storing (implement this)
+      const hashedPassword = await hashPassword(req.body.password);
+      
+      const admin = await adminRepository.createAdminUser({
+        ...req.body,
+        password: hashedPassword
+      });
+      
+      // Remove password from response
+      const { password, ...adminWithoutPassword } = admin;
+      res.status(201).json(adminWithoutPassword);
+    } catch (error) {
+      console.error('Error creating admin user:', error);
+      res.status(500).json({ message: 'Failed to create admin user' });
+    }
+  });
+  
+  const httpServer = createServer(app);
+  return httpServer;
+}
+// Implement this function
+async function hashPassword(password: string): Promise<string> {
+  // Use bcrypt or similar
+  // Example implementation with bcrypt
+  const bcrypt = require('bcrypt');
+  const saltRounds = 10;
+  return bcrypt.hash(password, saltRounds);
+}
+4. Security Implementation
+Admin Authentication
+// admin-dashboard/server/auth.ts
+import passport from 'passport';
+import { Strategy as LocalStrategy } from 'passport-local';
+import { Strategy as JwtStrategy, ExtractJwt } from 'passport-jwt';
+import { Express } from 'express';
+import session from 'express-session';
+import { scrypt, randomBytes, timingSafeEqual } from 'crypto';
+import { promisify } from 'util';
+import jwt from 'jsonwebtoken';
+import { adminRepository } from './admin-repository';
+import { AdminUser } from '@shared/schema';
+// For password hashing
+const scryptAsync = promisify(scrypt);
+// Password handling
+async function hashPassword(password: string) {
+  const salt = randomBytes(16).toString('hex');
+  const buf = (await scryptAsync(password, salt, 64)) as Buffer;
+  return `${buf.toString('hex')}.${salt}`;
+}
+async function comparePasswords(supplied: string, stored: string) {
+  const [hashed, salt] = stored.split('.');
+  const hashedBuf = Buffer.from(hashed, 'hex');
+  const suppliedBuf = (await scryptAsync(supplied, salt, 64)) as Buffer;
+  return timingSafeEqual(hashedBuf, suppliedBuf);
+}
+// JWT token creation
+function generateToken(admin: AdminUser) {
+  const payload = {
+    id: admin.id,
+    username: admin.username,
+    role: admin.role
+  };
+  
+  return jwt.sign(payload, process.env.ADMIN_JWT_SECRET!, {
+    expiresIn: '1h' // Short lived token
+  });
+}
+// Token verification middleware
+export function verifyAdminToken(req: any, res: any, next: any) {
+  const token = req.headers.authorization?.split(' ')[1];
+  
+  if (!token) {
+    return res.status(401).json({ message: 'No token provided' });
+  }
+  
+  try {
+    const decoded = jwt.verify(token, process.env.ADMIN_JWT_SECRET!);
+    req.user = decoded;
+    next();
+  } catch (error) {
+    return res.status(401).json({ message: 'Invalid or expired token' });
+  }
+}
+// Set up authentication
+export function setupAdminAuth(app: Express) {
+  // Configure express-session
+  const sessionSettings: session.SessionOptions = {
+    secret: process.env.SESSION_SECRET!,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      secure: process.env.NODE_ENV === 'production',
+      httpOnly: true,
+      maxAge: parseInt(process.env.SESSION_EXPIRY!) || 3600000 // 1 hour by default
+    }
+  };
+  
+  app.use(session(sessionSettings));
+  app.use(passport.initialize());
+  app.use(passport.session());
+  
+  // Local strategy for username/password login
+  passport.use(new LocalStrategy(async (username, password, done) => {
+    try {
+      const admin = await adminRepository.getAdminByUsername(username);
+      
+      if (!admin || !(await comparePasswords(password, admin.password))) {
+        return done(null, false, { message: 'Invalid username or password' });
+      }
+      
+      // Update last login time
+      await adminRepository.updateLastLogin(admin.id);
+      
+      return done(null, admin);
+    } catch (error) {
+      return done(error);
+    }
+  }));
+  
+  // JWT strategy for token-based authentication
+  passport.use(new JwtStrategy({
+    jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+    secretOrKey: process.env.ADMIN_JWT_SECRET!
+  }, async (payload, done) => {
+    try {
+      const admin = await adminRepository.getAdminById(payload.id);
+      
+      if (!admin) {
+        return done(null, false);
+      }
+      
+      return done(null, admin);
+    } catch (error) {
+      return done(error);
+    }
+  }));
+  
+  // Serialization for session
+  passport.serializeUser((admin: any, done) => done(null, admin.id));
+  passport.deserializeUser(async (id: number, done) => {
+    try {
+      const admin = await adminRepository.getAdminById(id);
+      done(null, admin);
+    } catch (error) {
+      done(error);
+    }
+  });
+  
+  // Login route
+  app.post('/api/admin/login', (req, res, next) => {
+    passport.authenticate('local', (err: any, admin: any, info: any) => {
+      if (err) return next(err);
+      if (!admin) return res.status(401).json({ message: info.message || 'Authentication failed' });
+      
+      req.login(admin, (err) => {
+        if (err) return next(err);
+        
+        // Generate JWT token
+        const token = generateToken(admin);
+        
+        // Remove password from response
+        const { password, ...adminData } = admin;
+        
+        return res.json({
+          message: 'Login successful',
+          admin: adminData,
+          token
+        });
+      });
+    })(req, res, next);
+  });
+  
+  // Logout route
+  app.post('/api/admin/logout', (req, res) => {
+    req.logout((err) => {
+      if (err) return res.status(500).json({ message: 'Logout failed' });
+      res.json({ message: 'Logout successful' });
+    });
+  });
+  
+  // Current admin user route
+  app.get('/api/admin/me', verifyAdminToken, (req, res) => {
+    res.json(req.user);
+  });
+}
+Security Best Practices
+Rate Limiting
+// admin-dashboard/server/middleware/rate-limit.ts
+import rateLimit from 'express-rate-limit';
+export const loginRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // 5 attempts per window
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    res.status(429).json({
+      message: 'Too many login attempts, please try again after 15 minutes'
+    });
+  }
+});
+export const apiRateLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 100, // 100 requests per minute
+  standardHeaders: true,
+  legacyHeaders: false
+});
+CORS Configuration
+// admin-dashboard/server/middleware/cors.ts
+import cors from 'cors';
+// Strict CORS policy for admin dashboard
+export const corsOptions = {
+  origin: process.env.ADMIN_DASHBOARD_URL || 'http://localhost:3001',
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+  credentials: true,
+  maxAge: 86400, // 24 hours
+  allowedHeaders: ['Content-Type', 'Authorization']
+};
+export const configureCors = (app) => {
+  app.use(cors(corsOptions));
+};
+Content Security Policy
+// admin-dashboard/server/middleware/security-headers.ts
+import helmet from 'helmet';
+export const configureSecurityHeaders = (app) => {
+  // Set secure headers with Helmet
+  app.use(helmet());
+  
+  // Custom CSP for admin dashboard
+  app.use(helmet.contentSecurityPolicy({
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", 'https://cdn.jsdelivr.net'],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      imgSrc: ["'self'", 'data:', 'https://res.cloudinary.com'],
+      connectSrc: ["'self'", 'https://api.example.com'],
+      fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+      objectSrc: ["'none'"],
+      mediaSrc: ["'self'"],
+      frameSrc: ["'none'"],
+    },
+  }));
+};
+SQL Injection Protection
+// Already handled by Drizzle ORM which uses parameterized queries
+// Additional validation layer example:
+import { z } from 'zod';
+// Input validation for all query parameters
+export function validateId(req, res, next) {
+  const schema = z.object({
+    id: z.coerce.number().positive().int()
+  });
+  
+  try {
+    schema.parse(req.params);
+    next();
+  } catch (error) {
+    res.status(400).json({ 
+      message: 'Invalid ID parameter',
+      errors: error.errors 
+    });
+  }
+}
+// Apply to routes
+app.get('/api/admin/users/:id', validateId, async (req, res) => {
+  // ...handler
+});
+5. Database Migration Strategy
+To add the admin-specific tables to the existing database:
+
+// migration script
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { db } from './db';
+// Run migrations
+async function runMigrations() {
+  console.log('Running migrations...');
+  
+  try {
+    await migrate(db, { migrationsFolder: './drizzle' });
+    console.log('Migrations completed successfully');
+  } catch (error) {
+    console.error('Migration failed:', error);
+    process.exit(1);
+  }
+}
+runMigrations();
+Create the migration file:
+
+npx drizzle-kit generate:pg --schema=./shared/schema.ts --out=./drizzle
+6. Deployment Considerations
+Environment Isolation
+
+Use different environment variables for production and development
+Store secrets in a secure vault or environment variable management system
+Never hardcode secrets in the codebase
+Database Access Controls
+
+Create a dedicated database user for the admin application with appropriate permissions
+Use row-level security in PostgreSQL if needed for multi-tenant admin access
+Monitoring and Logging
+
+Implement comprehensive logging for all admin actions
+Set up alerts for suspicious activities (multiple failed login attempts, unusual data queries)
+Regularly audit admin activity logs
+Backup Strategy
+
+Ensure regular database backups
+Implement point-in-time recovery options
+Test restoration procedures periodically

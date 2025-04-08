@@ -1,0 +1,405 @@
+# PureFlow - Water Filtration System Management Application
+
+## Overview
+
+PureFlow is a mobile-responsive web application that enables users to order, install, and manage RO water filtration systems. The application provides a comprehensive solution for customers to subscribe to water filtration systems, schedule installations, manage their subscriptions, request support, and monitor water usage.
+
+## Table of Contents
+
+1. [Features](#features)
+2. [Technical Stack](#technical-stack)
+3. [Project Structure](#project-structure)
+4. [Setup and Installation](#setup-and-installation)
+5. [Authentication and User Management](#authentication-and-user-management)
+6. [Database Schema](#database-schema)
+7. [API Endpoints](#api-endpoints)
+8. [Subscription and Payment Management](#subscription-and-payment-management)
+9. [Internationalization](#internationalization)
+10. [Referral System](#referral-system)
+11. [Testing](#testing)
+12. [Production Deployment](#production-deployment)
+13. [Troubleshooting](#troubleshooting)
+
+## Features
+
+### Core Features
+
+- **User Authentication**: Registration, login, and profile management
+- **Subscription Management**: Subscribe to water filtration system with monthly billing
+- **Installation Scheduling**: Schedule and track installation appointments
+- **Support Ticket System**: Submit and track support requests
+- **User Dashboard**: Overview of subscription, usage, and system status
+- **Payment Processing**: Integrated Stripe payment gateway
+- **Referral Program**: Refer friends and earn rewards
+- **Multi-language Support**: Full Arabic and English localization
+- **Mobile Responsiveness**: Optimized for mobile, tablet, and desktop devices
+- **Reminder System**: Automated maintenance and filter replacement reminders
+
+### User Journey
+
+1. Register/Login to the platform
+2. Subscribe to a water filtration system (25 JOD/month)
+3. Schedule installation date and time
+4. Receive installation confirmation
+5. Manage subscription and payments
+6. Request support when needed
+7. Refer friends to earn rewards
+
+## Technical Stack
+
+### Frontend
+- **React.js**: UI framework
+- **TypeScript**: Type-safe JavaScript
+- **TailwindCSS**: Utility-first CSS framework
+- **Shadcn UI**: Component library
+- **React Query**: Server state management
+- **React Hook Form**: Form handling with validation
+- **Zod**: Schema validation
+- **Wouter**: Client-side routing
+- **Lucide React**: Icon library
+
+### Backend
+- **Node.js**: Runtime environment
+- **Express.js**: Web framework
+- **TypeScript**: Type-safe JavaScript
+- **Passport.js**: Authentication middleware
+- **Drizzle ORM**: Database ORM
+- **PostgreSQL**: Relational database
+- **Stripe**: Payment processing
+
+### Development Tools
+- **Vite**: Fast development server and build tool
+- **ESLint**: Code linting
+- **Prettier**: Code formatting
+
+## Project Structure
+
+The project follows a standard structure with client and server directories:
+
+```
+/
+├── client/                # Frontend code
+│   ├── src/
+│   │   ├── components/    # Reusable UI components
+│   │   ├── hooks/         # Custom React hooks
+│   │   ├── lib/           # Utility functions
+│   │   ├── pages/         # Page components
+│   │   ├── App.tsx        # Main application component
+│   │   └── main.tsx       # Entry point
+├── server/                # Backend code
+│   ├── auth.ts            # Authentication logic
+│   ├── db.ts              # Database connection
+│   ├── routes.ts          # API routes
+│   ├── storage.ts         # Storage interface
+│   └── index.ts           # Server entry point
+├── shared/                # Shared code between client and server
+│   └── schema.ts          # Database schema and types
+└── public/                # Static assets
+```
+
+## Setup and Installation
+
+### Prerequisites
+
+- Node.js (v18.x or higher)
+- PostgreSQL database
+- Stripe account for payment processing
+
+### Environment Variables
+
+Create a `.env` file with the following variables:
+
+```
+# Database
+DATABASE_URL=postgresql://user:password@localhost:5432/pureflow
+
+# Session
+SESSION_SECRET=your_session_secret
+
+# Stripe
+STRIPE_SECRET_KEY=sk_test_your_secret_key
+VITE_STRIPE_PUBLIC_KEY=pk_test_your_public_key
+```
+
+### Installation Steps
+
+1. Clone the repository
+2. Install dependencies:
+   ```
+   npm install
+   ```
+3. Set up the database:
+   ```
+   npm run db:push
+   ```
+4. Start the development server:
+   ```
+   npm run dev
+   ```
+
+## Authentication and User Management
+
+The application uses a session-based authentication system powered by Passport.js. User passwords are securely hashed using the scrypt algorithm.
+
+### User Registration Flow
+
+1. User fills out the registration form with username, password, and optional details
+2. The backend validates the input and checks for existing usernames
+3. If validation passes, the password is hashed and a new user record is created
+4. The user is automatically logged in after registration
+5. A unique referral code is generated for the user
+
+### User Login Flow
+
+1. User enters username and password
+2. The backend verifies credentials using Passport's local strategy
+3. On successful login, a session is created and the user is redirected to the dashboard
+
+## Database Schema
+
+The database schema is defined in `shared/schema.ts` using Drizzle ORM. The main tables include:
+
+### Users Table
+- `id`: Primary key
+- `username`: Unique username
+- `password`: Hashed password
+- `email`: User email
+- `phone`: Phone number
+- `address`: Address information
+- `referralCode`: Unique referral code
+- `createdAt`: Account creation timestamp
+
+### Subscriptions Table
+- `id`: Primary key
+- `userId`: Foreign key to users
+- `plan`: Subscription plan name
+- `status`: Subscription status (active, expired, etc.)
+- `startDate`: Subscription start date
+- `endDate`: Subscription end date
+- `amount`: Subscription amount
+- `currency`: Currency code
+- `stripeCustomerId`: Stripe customer ID
+- `stripeSubscriptionId`: Stripe subscription ID
+- `createdAt`: Record creation timestamp
+
+### Installations Table
+- `id`: Primary key
+- `userId`: Foreign key to users
+- `status`: Installation status
+- `scheduledDate`: Scheduled installation date
+- `completedDate`: Completion date
+- `notes`: Installation notes
+- `createdAt`: Record creation timestamp
+
+### Support Tickets Table
+- `id`: Primary key
+- `userId`: Foreign key to users
+- `title`: Ticket title
+- `description`: Ticket description
+- `status`: Ticket status
+- `priority`: Ticket priority
+- `createdAt`: Ticket creation timestamp
+
+### Referrals Table
+- `id`: Primary key
+- `referrerId`: Foreign key to referring user
+- `referredId`: Foreign key to referred user
+- `status`: Referral status
+- `createdAt`: Referral creation timestamp
+
+### Rewards Table
+- `id`: Primary key
+- `userId`: Foreign key to users
+- `type`: Reward type
+- `amount`: Reward amount
+- `status`: Reward status
+- `createdAt`: Reward creation timestamp
+
+### Reminders Table
+- `id`: Primary key
+- `userId`: Foreign key to users
+- `type`: Reminder type
+- `title`: Reminder title
+- `message`: Reminder message
+- `scheduledDate`: Scheduled reminder date
+- `status`: Reminder status
+- `createdAt`: Reminder creation timestamp
+
+## API Endpoints
+
+The API endpoints are organized by functionality:
+
+### Authentication Endpoints
+- `POST /api/register`: Register a new user
+- `POST /api/login`: Log in an existing user
+- `POST /api/logout`: Log out the current user
+- `GET /api/user`: Get the current user's data
+
+### Subscription Endpoints
+- `GET /api/subscription`: Get user's subscription details
+- `POST /api/subscription`: Create a new subscription
+- `PATCH /api/subscription/:id`: Update subscription details
+
+### Installation Endpoints
+- `GET /api/installation`: Get user's installation details
+- `POST /api/installation`: Schedule a new installation
+- `PATCH /api/installation/:id`: Update installation details
+
+### Support Endpoints
+- `GET /api/support-tickets`: Get user's support tickets
+- `POST /api/support-tickets`: Create a new support ticket
+- `PATCH /api/support-tickets/:id`: Update a support ticket
+
+### Referral Endpoints
+- `GET /api/referral-code`: Get user's referral code
+- `GET /api/referrals`: Get user's referrals
+- `POST /api/referrals`: Create a new referral
+
+### Reward Endpoints
+- `GET /api/rewards`: Get user's rewards
+- `POST /api/rewards`: Create a new reward
+- `PATCH /api/rewards/:id`: Update a reward
+
+### Reminder Endpoints
+- `GET /api/reminders`: Get user's reminders
+- `POST /api/reminders`: Create a new reminder
+- `PATCH /api/reminders/:id`: Update a reminder status
+
+### Payment Endpoints
+- `POST /api/create-payment-intent`: Create a Stripe payment intent
+- `POST /api/get-or-create-subscription`: Create or get a Stripe subscription
+
+## Subscription and Payment Management
+
+### Subscription Flow
+
+1. User selects a subscription plan (currently fixed at 25 JOD/month)
+2. User is redirected to the checkout page
+3. User enters payment details through the Stripe Elements UI
+4. On successful payment, a subscription record is created
+5. User is redirected to the subscription success page
+
+### Payment Integration
+
+The application supports multiple payment gateways:
+
+#### Stripe Payment Gateway
+
+The primary integration uses Stripe for payment processing:
+
+1. **Frontend**: Stripe Elements for secure payment form collection
+2. **Backend**: Stripe API for payment processing and subscription management
+3. **Webhooks**: Optional integration for handling subscription lifecycle events
+
+#### Zain Cash Integration (In Progress)
+
+The application includes a structural foundation for Zain Cash integration, a popular mobile payment service in Jordan:
+
+1. **Backend Structure**: API endpoints and service modules prepared in `server/routes/zaincash.ts` and `server/services/zaincash.ts`
+2. **Documentation**: Detailed integration guide available in `ZAINCASH_INTEGRATION.md`
+3. **Future Development**: Requires official API documentation and merchant credentials from Zain Cash to complete
+
+### Subscription Management
+
+Users can:
+- View their current subscription details
+- Update their payment method
+- Cancel their subscription
+- Reactivate a canceled subscription
+
+## Internationalization
+
+The application supports multiple languages, with a focus on Arabic and English.
+
+### Translation System
+
+- Language selection is available in the user interface
+- Translations are stored in the `client/src/lib/translations.ts` file
+- The application supports right-to-left (RTL) text direction for Arabic
+
+### Language Switching
+
+Users can switch languages from the language switcher component in the navigation bar. The selected language is persisted across sessions.
+
+## Referral System
+
+The application includes a comprehensive referral system to encourage user growth.
+
+### Referral Flow
+
+1. User shares their unique referral code with friends
+2. When a new user registers using the referral code, a referral record is created
+3. Both the referrer and the referred user receive rewards when specific conditions are met (e.g., the referred user subscribes)
+
+### Reward Types
+
+- Discount on subscription
+- Free month of service
+- Cash rewards
+
+## Testing
+
+The application includes several testing methodologies:
+
+### Unit Testing
+Test individual components and functions in isolation.
+
+### Integration Testing
+Test the interaction between different components.
+
+### End-to-End Testing
+Test the complete user flow from start to finish.
+
+## Production Deployment
+
+### Deployment Checklist
+
+1. Set up production PostgreSQL database
+2. Configure production environment variables
+3. Build the frontend:
+   ```
+   npm run build
+   ```
+4. Start the production server:
+   ```
+   npm start
+   ```
+
+### Performance Optimization
+
+- Frontend assets are optimized during the build process
+- Server-side caching can be implemented for frequently accessed data
+- Database queries are optimized for performance
+
+## Troubleshooting
+
+### Common Issues
+
+#### Authentication Issues
+- Ensure the session secret is properly set
+- Check that session cookies are being set and sent correctly
+
+#### Payment Processing Issues
+- Verify Stripe API keys are correct
+- Check for webhook configuration issues
+
+#### Database Connection Issues
+- Verify the database connection string
+- Ensure the database user has the necessary permissions
+
+### Logging
+
+The application includes comprehensive logging to help diagnose issues:
+- API request logging
+- Error logging
+- Payment processing logging
+
+---
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+---
+
+*This documentation is a living document and will be updated as the application evolves.*

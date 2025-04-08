@@ -1,0 +1,18 @@
+{
+  "name": "naturalflow",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:client": "cd apps/client && npm run dev",
+    "dev:admin": "cd apps/admin && npm run dev",
+    "build:client": "cd apps/client && npm run build",
+    "build:admin": "cd apps/admin && npm run build",
+    "test": "npm run test:client && npm run test:admin",
+    "test:client": "cd apps/client && npm test",
+    "test:admin": "cd apps/admin && npm test"
+  }
+} 
