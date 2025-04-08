@@ -15,9 +15,11 @@ import fs from "fs";
 import Stripe from "stripe";
 import zaincashRoutes from "./routes/zaincash";
 
-// Use the real Stripe library if a key is provided, otherwise use a mock implementation
-const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || 'sk_test_51OkvwTIdlaQUZMwU59LhO39RvvvCvK3Gj4j4fKz7IW1Lws1bHBPyiwlxFTk9QgTGJUUCZDR0hjvgLe0V25iFQRfQ00NwpEvVyS';
-const stripe = new Stripe(STRIPE_SECRET_KEY);
+if (!process.env.STRIPE_SECRET_KEY) {
+  throw new Error('STRIPE_SECRET_KEY environment variable is required');
+}
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 // Create uploads directory if it doesn't exist
 const uploadDir = path.join(process.cwd(), "uploads");
